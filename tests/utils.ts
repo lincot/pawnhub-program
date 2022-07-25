@@ -1,4 +1,4 @@
-import { Program } from "@project-serum/anchor";
+import { BN, Program } from "@project-serum/anchor";
 import { findProgramAddressSync } from "@project-serum/anchor/dist/cjs/utils/pubkey";
 import {
   AccountInfo as TokenAccountInfo,
@@ -78,4 +78,14 @@ export const getBorrowerAndLenderTokenBalance = async (
 
 export const delay = async (timeInMS: number) => {
   return new Promise((_) => setTimeout(_, timeInMS));
+};
+
+export const bnsToNumbers = (obj: any): any => {
+  let objCopy = JSON.parse(JSON.stringify(obj));
+  for (let key in objCopy) {
+    if (objCopy[key] instanceof BN) {
+      objCopy[key] = objCopy[key].toNumber();
+    }
+  }
+  return objCopy;
 };

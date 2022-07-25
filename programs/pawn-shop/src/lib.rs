@@ -151,6 +151,235 @@ pub mod pawn_shop {
         Ok(())
     }
 
+    pub fn make_offer(ctx: Context<MakeOffer>, terms: LoanTerms) -> Result<()> {
+        invariant!(
+            ctx.accounts.pawn_loan.status == LoanStatus::Open,
+            InvalidLoanStatus
+        );
+
+        invariant!(terms.mint == ctx.accounts.loan_mint.key());
+
+        if terms.mint == native_mint::ID {
+            system_program::transfer(
+                CpiContext::new(
+                    ctx.accounts.system_program.to_account_info(),
+                    system_program::Transfer {
+                        from: ctx.accounts.lender_payment_account.to_account_info(),
+                        to: ctx.accounts.temporary_payment_account.to_account_info(),
+                    },
+                ),
+                (ctx.accounts.rent.minimum_balance(0)).max(terms.principal_amount),
+            )?;
+        } else {
+            system_program::create_account(
+                CpiContext::new_with_signer(
+                    ctx.accounts.system_program.to_account_info(),
+                    system_program::CreateAccount {
+                        from: ctx.accounts.lender.to_account_info(),
+                        to: ctx.accounts.temporary_payment_account.to_account_info(),
+                    },
+                    &[&[
+                        b"temporary_payment_account",
+                        ctx.accounts.offer.key().as_ref(),
+                        &[unwrap_bump!(ctx, "temporary_payment_account")],
+                    ]],
+                ),
+                ctx.accounts.rent.minimum_balance(token::TokenAccount::LEN),
+                token::TokenAccount::LEN as u64,
+                &ctx.accounts.token_program.key(),
+            )?;
+
+            token::initialize_account(CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                token::InitializeAccount {
+                    account: ctx.accounts.temporary_payment_account.to_account_info(),
+                    authority: ctx.accounts.offer.to_account_info(),
+                    mint: ctx.accounts.loan_mint.to_account_info(),
+                    rent: ctx.accounts.rent.to_account_info(),
+                },
+            ))?;
+
+            token::transfer(
+                CpiContext::new(
+                    ctx.accounts.token_program.to_account_info(),
+                    token::Transfer {
+                        from: ctx.accounts.lender_payment_account.to_account_info(),
+                        to: ctx.accounts.temporary_payment_account.to_account_info(),
+                        authority: ctx.accounts.lender.to_account_info(),
+                    },
+                ),
+                terms.principal_amount,
+            )?;
+        }
+
+        ctx.accounts.offer.terms = terms;
+
+        emit!(OfferMade {
+            pawn_loan: ctx.accounts.pawn_loan.key(),
+            lender: ctx.accounts.lender.key()
+        });
+
+        Ok(())
+    }
+
+    pub fn accept_offer(ctx: Context<AcceptOffer>, expected_terms: LoanTerms) -> Result<()> {
+        let unix_timestamp = Clock::get()?.unix_timestamp;
+        let pawn_loan = &mut ctx.accounts.pawn_loan;
+
+        invariant!(pawn_loan.status == LoanStatus::Open, InvalidLoanStatus);
+
+        let terms = ctx.accounts.offer.terms;
+        pawn_loan.status = LoanStatus::Active;
+        pawn_loan.start_time = unix_timestamp;
+        pawn_loan.lender = ctx.accounts.lender.key();
+
+        invariant!(expected_terms == terms, UnexpectedDesiredTerms);
+
+        pawn_loan.terms = Some(terms);
+
+        if ctx.accounts.offer.terms.mint == native_mint::ID {
+            system_program::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.system_program.to_account_info(),
+                    system_program::Transfer {
+                        from: ctx.accounts.temporary_payment_account.to_account_info(),
+                        to: ctx.accounts.borrower_payment_account.to_account_info(),
+                    },
+                    &[&[
+                        b"temporary_payment_account",
+                        ctx.accounts.offer.key().as_ref(),
+                        &[unwrap_bump!(ctx, "temporary_payment_account")],
+                    ]],
+                ),
+                ctx.accounts.offer.terms.principal_amount,
+            )?;
+
+            system_program::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.system_program.to_account_info(),
+                    system_program::Transfer {
+                        from: ctx.accounts.temporary_payment_account.to_account_info(),
+                        to: ctx.accounts.lender.to_account_info(),
+                    },
+                    &[&[
+                        b"temporary_payment_account",
+                        ctx.accounts.offer.key().as_ref(),
+                        &[unwrap_bump!(ctx, "temporary_payment_account")],
+                    ]],
+                ),
+                ctx.accounts.temporary_payment_account.lamports(),
+            )?;
+        } else {
+            let temporary_payment_account = Account::<TokenAccount>::try_from(
+                &ctx.accounts.temporary_payment_account.to_account_info(),
+            )?;
+
+            token::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    token::Transfer {
+                        from: ctx.accounts.temporary_payment_account.to_account_info(),
+                        to: ctx.accounts.borrower_payment_account.to_account_info(),
+                        authority: ctx.accounts.offer.to_account_info(),
+                    },
+                    &[&[
+                        b"offer",
+                        ctx.accounts.pawn_loan.key().as_ref(),
+                        ctx.accounts.lender.key().as_ref(),
+                        &[unwrap_bump!(ctx, "offer")],
+                    ]],
+                ),
+                temporary_payment_account.amount,
+            )?;
+
+            token::close_account(CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                token::CloseAccount {
+                    account: ctx.accounts.temporary_payment_account.to_account_info(),
+                    authority: ctx.accounts.offer.to_account_info(),
+                    destination: ctx.accounts.lender.to_account_info(),
+                },
+                &[&[
+                    b"offer",
+                    ctx.accounts.pawn_loan.key().as_ref(),
+                    ctx.accounts.lender.key().as_ref(),
+                    &[unwrap_bump!(ctx, "offer")],
+                ]],
+            ))?;
+        }
+
+        emit!(OfferCanceled {
+            pawn_loan: ctx.accounts.pawn_loan.key(),
+            lender: ctx.accounts.lender.key(),
+        });
+
+        Ok(())
+    }
+
+    pub fn cancel_offer(ctx: Context<CancelOffer>, pawn_loan: Pubkey) -> Result<()> {
+        if ctx.accounts.offer.terms.mint == native_mint::ID {
+            system_program::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.system_program.to_account_info(),
+                    system_program::Transfer {
+                        from: ctx.accounts.temporary_payment_account.to_account_info(),
+                        to: ctx.accounts.lender_payment_account.to_account_info(),
+                    },
+                    &[&[
+                        b"temporary_payment_account",
+                        ctx.accounts.offer.key().as_ref(),
+                        &[unwrap_bump!(ctx, "temporary_payment_account")],
+                    ]],
+                ),
+                ctx.accounts.temporary_payment_account.lamports(),
+            )?;
+        } else {
+            let temporary_payment_account = Account::<TokenAccount>::try_from(
+                &ctx.accounts.temporary_payment_account.to_account_info(),
+            )?;
+
+            token::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    token::Transfer {
+                        from: ctx.accounts.temporary_payment_account.to_account_info(),
+                        to: ctx.accounts.lender_payment_account.to_account_info(),
+                        authority: ctx.accounts.offer.to_account_info(),
+                    },
+                    &[&[
+                        b"offer",
+                        pawn_loan.key().as_ref(),
+                        ctx.accounts.lender.key().as_ref(),
+                        &[unwrap_bump!(ctx, "offer")],
+                    ]],
+                ),
+                temporary_payment_account.amount,
+            )?;
+
+            token::close_account(CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                token::CloseAccount {
+                    account: ctx.accounts.temporary_payment_account.to_account_info(),
+                    authority: ctx.accounts.offer.to_account_info(),
+                    destination: ctx.accounts.lender.to_account_info(),
+                },
+                &[&[
+                    b"offer",
+                    pawn_loan.key().as_ref(),
+                    ctx.accounts.lender.key().as_ref(),
+                    &[unwrap_bump!(ctx, "offer")],
+                ]],
+            ))?;
+        }
+
+        emit!(OfferCanceled {
+            pawn_loan,
+            lender: ctx.accounts.lender.key()
+        });
+
+        Ok(())
+    }
+
     /// Borrower pays back loan amount plus interest and gets the pawn back.
     /// Lender gets back loan amount plus interest minus admin fee.
     pub fn repay_loan(ctx: Context<RepayLoan>) -> Result<()> {
@@ -397,6 +626,91 @@ pub struct UnderwriteLoan<'info> {
 }
 
 #[derive(Accounts)]
+pub struct MakeOffer<'info> {
+    pub pawn_loan: Account<'info, PawnLoan>,
+    /// CHECK: Only used in CPI
+    pub loan_mint: UncheckedAccount<'info>,
+    #[account(mut)]
+    pub lender: Signer<'info>,
+    /// CHECK: Sends the principal, can be the lender wallet or his spl token account
+    #[account(mut)]
+    pub lender_payment_account: UncheckedAccount<'info>,
+    /// CHECK: Sends the principal, can be a wallet or his spl token account
+    #[account(
+        mut,
+        seeds = [b"temporary_payment_account", offer.key().as_ref()],
+        bump,
+    )]
+    pub temporary_payment_account: UncheckedAccount<'info>,
+    #[account(
+        init,
+        seeds = [b"offer", pawn_loan.key().as_ref(), lender.key().as_ref()],
+        bump,
+        payer = lender,
+        space = Offer::space(),
+    )]
+    pub offer: Account<'info, Offer>,
+    pub rent: Sysvar<'info, Rent>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct AcceptOffer<'info> {
+    #[account(mut)]
+    pub pawn_loan: Account<'info, PawnLoan>,
+    pub borrower: Signer<'info>,
+    /// CHECK: Receives the principal, can be the borrower wallet or his spl token account
+    #[account(mut)]
+    pub borrower_payment_account: UncheckedAccount<'info>,
+    /// CHECK: lender account
+    #[account(mut)]
+    pub lender: UncheckedAccount<'info>,
+    /// CHECK: Sends the principal, can be a wallet or his spl token account
+    #[account(
+        mut,
+        seeds = [b"temporary_payment_account", offer.key().as_ref()],
+        bump,
+    )]
+    pub temporary_payment_account: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        seeds = [b"offer", pawn_loan.key().as_ref(), lender.key().as_ref()],
+        bump,
+        close = lender,
+    )]
+    pub offer: Account<'info, Offer>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(pawn_loan: Pubkey)]
+pub struct CancelOffer<'info> {
+    #[account(mut)]
+    pub lender: Signer<'info>,
+    /// CHECK: Sends the principal, can be the lender wallet or his spl token account
+    #[account(mut)]
+    pub lender_payment_account: UncheckedAccount<'info>,
+    /// CHECK: Sends the principal, can be a wallet or his spl token account
+    #[account(
+        mut,
+        seeds = [b"temporary_payment_account", offer.key().as_ref()],
+        bump,
+    )]
+    pub temporary_payment_account: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        seeds = [b"offer", pawn_loan.key().as_ref(), lender.key().as_ref()],
+        bump,
+        close = lender,
+    )]
+    pub offer: Account<'info, Offer>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 pub struct RepayLoan<'info> {
     #[account(mut, has_one = pawn_token_account, has_one = pawn_mint, has_one = borrower)]
     pub pawn_loan: Account<'info, PawnLoan>,
@@ -515,6 +829,17 @@ impl PawnLoan {
     }
 }
 
+#[account]
+pub struct Offer {
+    pub terms: LoanTerms,
+}
+
+impl Offer {
+    fn space() -> usize {
+        8 + LoanTerms::space()
+    }
+}
+
 pub fn compute_admin_fee(interest_due: u64, admin_fee_bps: u64) -> Option<u64> {
     u128::from(interest_due)
         .checked_mul(admin_fee_bps.into())?
@@ -597,6 +922,24 @@ pub struct LoanRepaid {
 pub struct PawnSeized {
     pawn_loan_address: Pubkey,
     pawn_loan: PawnLoan,
+}
+
+#[event]
+pub struct OfferMade {
+    pawn_loan: Pubkey,
+    lender: Pubkey,
+}
+
+#[event]
+pub struct OfferAccepted {
+    pawn_loan: Pubkey,
+    lender: Pubkey,
+}
+
+#[event]
+pub struct OfferCanceled {
+    pawn_loan: Pubkey,
+    lender: Pubkey,
 }
 
 #[derive(Debug, Clone)]

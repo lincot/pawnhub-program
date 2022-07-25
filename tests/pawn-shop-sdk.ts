@@ -1,11 +1,17 @@
 import { findProgramAddressSync } from "@project-serum/anchor/dist/cjs/utils/pubkey";
 import { BN, IdlAccounts, IdlTypes, Program } from "@project-serum/anchor";
-import { PublicKey, Keypair, SystemProgram } from "@solana/web3.js";
+import {
+  PublicKey,
+  Keypair,
+  SystemProgram,
+  SYSVAR_RENT_PUBKEY,
+} from "@solana/web3.js";
 import { PawnShop } from "../target/types/pawn_shop";
 import { assert } from "chai";
 import { PROGRAM_ID as METAPLEX_PROGRAM_ID } from "@metaplex-foundation/mpl-token-metadata";
 
 import fs from "fs";
+import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
 // Hack to prune events from the idl to prevent deserialization bug (account struct is not a defined type)
 const pawnShopIdl = JSON.parse(
@@ -78,6 +84,114 @@ export async function underwriteLoan(
       lender: lenderKeypair.publicKey,
       lenderPaymentAccount: lenderPaymentAccount,
       borrowerPaymentAccount: borrowerPaymentAccount,
+    })
+    .signers([lenderKeypair])
+    .rpc();
+}
+
+export async function makeOffer(
+  program: Program<PawnShop>,
+  terms: LoanTerms,
+  pawnLoanAddress: PublicKey,
+  lenderKeypair: Keypair,
+  lenderPaymentAccount: PublicKey
+) {
+  const [offer] = findProgramAddressSync(
+    [
+      Buffer.from("offer"),
+      pawnLoanAddress.toBuffer(),
+      lenderKeypair.publicKey.toBuffer(),
+    ],
+    program.programId
+  );
+  const [temporaryPaymentAccount] = findProgramAddressSync(
+    [Buffer.from("temporary_payment_account"), offer.toBuffer()],
+    program.programId
+  );
+
+  await program.methods
+    .makeOffer(terms)
+    .accounts({
+      pawnLoan: pawnLoanAddress,
+      loanMint: terms.mint,
+      lender: lenderKeypair.publicKey,
+      lenderPaymentAccount,
+      offer,
+      temporaryPaymentAccount,
+      rent: SYSVAR_RENT_PUBKEY,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
+    })
+    .signers([lenderKeypair])
+    .rpc();
+
+  return {
+    offer,
+    temporaryPaymentAccount,
+  };
+}
+
+export async function acceptOffer(
+  program: Program<PawnShop>,
+  pawnLoanAddress: PublicKey,
+  borrowerKeypair: Keypair,
+  borrowerPaymentAccount: PublicKey,
+  lender: PublicKey,
+  expectedTerms: LoanTerms
+) {
+  const [offer] = findProgramAddressSync(
+    [Buffer.from("offer"), pawnLoanAddress.toBuffer(), lender.toBuffer()],
+    program.programId
+  );
+  const [temporaryPaymentAccount] = findProgramAddressSync(
+    [Buffer.from("temporary_payment_account"), offer.toBuffer()],
+    program.programId
+  );
+
+  return await program.methods
+    .acceptOffer(expectedTerms)
+    .accounts({
+      pawnLoan: pawnLoanAddress,
+      borrower: borrowerKeypair.publicKey,
+      borrowerPaymentAccount,
+      lender,
+      temporaryPaymentAccount,
+      offer,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
+    })
+    .signers([borrowerKeypair])
+    .rpc();
+}
+
+export async function cancelOffer(
+  program: Program<PawnShop>,
+  pawnLoanAddress: PublicKey,
+  lenderKeypair: Keypair,
+  lenderPaymentAccount: PublicKey
+) {
+  const [offer] = findProgramAddressSync(
+    [
+      Buffer.from("offer"),
+      pawnLoanAddress.toBuffer(),
+      lenderKeypair.publicKey.toBuffer(),
+    ],
+    program.programId
+  );
+  const [temporaryPaymentAccount] = findProgramAddressSync(
+    [Buffer.from("temporary_payment_account"), offer.toBuffer()],
+    program.programId
+  );
+
+  return await program.methods
+    .cancelOffer(pawnLoanAddress)
+    .accounts({
+      lender: lenderKeypair.publicKey,
+      lenderPaymentAccount,
+      offer,
+      temporaryPaymentAccount,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
     })
     .signers([lenderKeypair])
     .rpc();

@@ -9,6 +9,7 @@ import {
 import { assert } from "chai";
 import { findProgramAddressSync } from "@project-serum/anchor/dist/cjs/utils/pubkey";
 import {
+  bnsToNumbers,
   delay,
   deserializeTokenAccountInfo,
   getBorrowerAndLenderSolBalance,
@@ -22,6 +23,9 @@ import {
   seizePawn,
   underwriteLoan,
   findMasterEditionPda,
+  makeOffer,
+  cancelOffer,
+  acceptOffer,
 } from "./pawn-shop-sdk";
 import { PawnShop } from "../target/types/pawn_shop";
 import { PublicKey, Keypair, AccountInfo, Transaction } from "@solana/web3.js";
@@ -528,6 +532,315 @@ describe("PawnHub", () => {
       assert.strictEqual(
         lenderBalanceBefore,
         lenderBalanceAfter + DEFAULT_LOAN_AMOUNT
+      );
+    });
+  });
+
+  describe("Make Offer - in SOL", () => {
+    let pawnLoanAddress: PublicKey;
+    let pawnLoanState: any;
+
+    beforeEach(async () => {
+      ({ pawnLoan: pawnLoanAddress } = await requestLoan(
+        program,
+        BORROWER_KEYPAIR,
+        borrowerPawnTokenAccount,
+        pawnMint.publicKey,
+        TERMS_VALID
+      ));
+
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
+    });
+
+    it("Sets terms for offer", async () => {
+      const { offer } = await makeOffer(
+        program,
+        TERMS_VALID,
+        pawnLoanAddress,
+        LENDER_KEYPAIR,
+        LENDER_KEYPAIR.publicKey
+      );
+
+      const terms = (await program.account.offer.fetch(offer)).terms;
+
+      assert.deepStrictEqual(bnsToNumbers(terms), bnsToNumbers(TERMS_VALID));
+    });
+
+    it("Transfers the loan amount from lender to the temporary account -- in SOL", async () => {
+      const { temporaryPaymentAccount } = await makeOffer(
+        program,
+        TERMS_VALID,
+        pawnLoanAddress,
+        LENDER_KEYPAIR,
+        LENDER_KEYPAIR.publicKey
+      );
+
+      assert.strictEqual(
+        await provider.connection.getBalance(temporaryPaymentAccount),
+        Math.max(
+          await provider.connection.getMinimumBalanceForRentExemption(0),
+          TERMS_VALID.principalAmount.toNumber()
+        )
+      );
+    });
+
+    it("Throws error if loan status is not open", async () => {
+      await underwriteLoan(
+        program,
+        pawnLoanAddress,
+        pawnLoanState,
+        LENDER_KEYPAIR,
+        LENDER_KEYPAIR.publicKey,
+        BORROWER_KEYPAIR.publicKey
+      );
+
+      try {
+        await makeOffer(
+          program,
+          TERMS_VALID,
+          pawnLoanAddress,
+          LENDER_KEYPAIR,
+          LENDER_KEYPAIR.publicKey
+        );
+        assert.ok(false);
+      } catch (e) {
+        let err = e as AnchorError;
+        assert.strictEqual(err.error.errorMessage, "InvalidLoanStatus");
+      }
+    });
+  });
+
+  describe("Accept Offer - in SOL", () => {
+    let pawnLoanAddress: PublicKey;
+    let offer: PublicKey;
+    let temporaryPaymentAccount: any;
+
+    beforeEach(async () => {
+      ({ pawnLoan: pawnLoanAddress } = await requestLoan(
+        program,
+        BORROWER_KEYPAIR,
+        borrowerPawnTokenAccount,
+        pawnMint.publicKey,
+        TERMS_VALID
+      ));
+
+      ({ offer, temporaryPaymentAccount } = await makeOffer(
+        program,
+        TERMS_VALID,
+        pawnLoanAddress,
+        LENDER_KEYPAIR,
+        LENDER_KEYPAIR.publicKey
+      ));
+    });
+
+    it("Closes temporary account and offer", async () => {
+      await acceptOffer(
+        program,
+        pawnLoanAddress,
+        BORROWER_KEYPAIR,
+        BORROWER_KEYPAIR.publicKey,
+        LENDER_KEYPAIR.publicKey,
+        TERMS_VALID
+      );
+
+      assert.strictEqual(
+        await program.provider.connection.getAccountInfo(
+          temporaryPaymentAccount
+        ),
+        null
+      );
+      assert.strictEqual(
+        await program.provider.connection.getAccountInfo(offer),
+        null
+      );
+    });
+  });
+
+  describe("Cancel Offer - in SOL", () => {
+    let pawnLoanAddress: PublicKey;
+    let offer: PublicKey;
+    let temporaryPaymentAccount: any;
+
+    beforeEach(async () => {
+      ({ pawnLoan: pawnLoanAddress } = await requestLoan(
+        program,
+        BORROWER_KEYPAIR,
+        borrowerPawnTokenAccount,
+        pawnMint.publicKey,
+        TERMS_VALID
+      ));
+
+      ({ offer, temporaryPaymentAccount } = await makeOffer(
+        program,
+        TERMS_VALID,
+        pawnLoanAddress,
+        LENDER_KEYPAIR,
+        LENDER_KEYPAIR.publicKey
+      ));
+    });
+
+    it("Closes temporary account and offer", async () => {
+      await cancelOffer(
+        program,
+        pawnLoanAddress,
+        LENDER_KEYPAIR,
+        LENDER_KEYPAIR.publicKey
+      );
+
+      assert.strictEqual(
+        await program.provider.connection.getAccountInfo(
+          temporaryPaymentAccount
+        ),
+        null
+      );
+      assert.strictEqual(
+        await program.provider.connection.getAccountInfo(offer),
+        null
+      );
+    });
+  });
+
+  describe("Make Offer - in SPL token", () => {
+    let pawnLoanAddress: PublicKey;
+
+    beforeEach(async () => {
+      ({ pawnLoan: pawnLoanAddress } = await requestLoan(
+        program,
+        BORROWER_KEYPAIR,
+        borrowerPawnTokenAccount,
+        pawnMint.publicKey,
+        TERMS_VALID
+      ));
+    });
+
+    it("Transfers the loan amount from lender to the temporary account -- in SPL token", async () => {
+      const [, lenderBalanceBefore] = await getBorrowerAndLenderTokenBalance(
+        program,
+        borrowerMintATokenAccount,
+        lenderMintATokenAccount
+      );
+
+      const { temporaryPaymentAccount } = await makeOffer(
+        program,
+        termsUsdc,
+        pawnLoanAddress,
+        LENDER_KEYPAIR,
+        lenderMintATokenAccount
+      );
+
+      const [, lenderBalanceAfter] = await getBorrowerAndLenderTokenBalance(
+        program,
+        borrowerMintATokenAccount,
+        lenderMintATokenAccount
+      );
+
+      if (lenderBalanceBefore === null || lenderBalanceAfter == null) {
+        assert.ok(false);
+        return;
+      }
+
+      assert.strictEqual(
+        lenderBalanceBefore - lenderBalanceAfter,
+        termsUsdc.principalAmount.toNumber()
+      );
+
+      assert.strictEqual(
+        (
+          await program.provider.connection.getTokenAccountBalance(
+            temporaryPaymentAccount
+          )
+        ).value.uiAmount,
+        termsUsdc.principalAmount.toNumber()
+      );
+    });
+  });
+
+  describe("Accept Offer - in SPL token", () => {
+    let pawnLoanAddress: PublicKey;
+    let offer: PublicKey;
+    let temporaryPaymentAccount: any;
+
+    beforeEach(async () => {
+      ({ pawnLoan: pawnLoanAddress } = await requestLoan(
+        program,
+        BORROWER_KEYPAIR,
+        borrowerPawnTokenAccount,
+        pawnMint.publicKey,
+        termsUsdc
+      ));
+
+      ({ offer, temporaryPaymentAccount } = await makeOffer(
+        program,
+        termsUsdc,
+        pawnLoanAddress,
+        LENDER_KEYPAIR,
+        lenderMintATokenAccount
+      ));
+    });
+
+    it("Closes temporary account and offer", async () => {
+      await acceptOffer(
+        program,
+        pawnLoanAddress,
+        BORROWER_KEYPAIR,
+        lenderMintATokenAccount,
+        LENDER_KEYPAIR.publicKey,
+        termsUsdc
+      );
+
+      assert.strictEqual(
+        await program.provider.connection.getAccountInfo(
+          temporaryPaymentAccount
+        ),
+        null
+      );
+      assert.strictEqual(
+        await program.provider.connection.getAccountInfo(offer),
+        null
+      );
+    });
+  });
+
+  describe("Cancel Offer - in SPL token", () => {
+    let pawnLoanAddress: PublicKey;
+    let offer: PublicKey;
+    let temporaryPaymentAccount: any;
+
+    beforeEach(async () => {
+      ({ pawnLoan: pawnLoanAddress } = await requestLoan(
+        program,
+        BORROWER_KEYPAIR,
+        borrowerPawnTokenAccount,
+        pawnMint.publicKey,
+        TERMS_VALID
+      ));
+
+      ({ offer, temporaryPaymentAccount } = await makeOffer(
+        program,
+        termsUsdc,
+        pawnLoanAddress,
+        LENDER_KEYPAIR,
+        lenderMintATokenAccount
+      ));
+    });
+
+    it("Closes temporary account and offer", async () => {
+      await cancelOffer(
+        program,
+        pawnLoanAddress,
+        LENDER_KEYPAIR,
+        lenderMintATokenAccount
+      );
+
+      assert.strictEqual(
+        await program.provider.connection.getAccountInfo(
+          temporaryPaymentAccount
+        ),
+        null
+      );
+      assert.strictEqual(
+        await program.provider.connection.getAccountInfo(offer),
+        null
       );
     });
   });
