@@ -1,5 +1,5 @@
 import { findProgramAddressSync } from "@project-serum/anchor/dist/cjs/utils/pubkey";
-import { BN, IdlAccounts, IdlTypes, Program } from "@project-serum/anchor";
+import { IdlAccounts, IdlTypes, Program } from "@project-serum/anchor";
 import {
   PublicKey,
   Keypair,

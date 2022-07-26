@@ -633,6 +633,25 @@ describe("PawnHub", () => {
       ));
     });
 
+    it("Sets terms for loan", async () => {
+      await acceptOffer(
+        program,
+        pawnLoanAddress,
+        BORROWER_KEYPAIR,
+        BORROWER_KEYPAIR.publicKey,
+        LENDER_KEYPAIR.publicKey,
+        TERMS_VALID
+      );
+
+      const pawnLoanAfter = await program.account.pawnLoan.fetch(
+        pawnLoanAddress
+      );
+      const terms = pawnLoanAfter.terms;
+
+      assert.deepStrictEqual(bnsToNumbers(terms), bnsToNumbers(TERMS_VALID));
+      assert.isTrue(pawnLoanAfter.lender.equals(LENDER_KEYPAIR.publicKey));
+    });
+
     it("Closes temporary account and offer", async () => {
       await acceptOffer(
         program,
@@ -766,7 +785,7 @@ describe("PawnHub", () => {
         BORROWER_KEYPAIR,
         borrowerPawnTokenAccount,
         pawnMint.publicKey,
-        termsUsdc
+        TERMS_VALID
       ));
 
       ({ offer, temporaryPaymentAccount } = await makeOffer(
@@ -778,12 +797,37 @@ describe("PawnHub", () => {
       ));
     });
 
-    it("Closes temporary account and offer", async () => {
+    it("Sets terms for loan", async () => {
       await acceptOffer(
         program,
         pawnLoanAddress,
         BORROWER_KEYPAIR,
-        lenderMintATokenAccount,
+        borrowerMintATokenAccount,
+        LENDER_KEYPAIR.publicKey,
+        termsUsdc
+      );
+
+      const pawnLoanAfter = await program.account.pawnLoan.fetch(
+        pawnLoanAddress
+      );
+      const terms = pawnLoanAfter.terms;
+
+      assert.deepStrictEqual(bnsToNumbers(terms), bnsToNumbers(termsUsdc));
+      assert.isTrue(pawnLoanAfter.lender.equals(LENDER_KEYPAIR.publicKey));
+    });
+
+    it("Closes temporary account and offer", async () => {
+      const [borrowerBalanceBefore] = await getBorrowerAndLenderTokenBalance(
+        program,
+        borrowerMintATokenAccount,
+        lenderMintATokenAccount
+      );
+
+      await acceptOffer(
+        program,
+        pawnLoanAddress,
+        BORROWER_KEYPAIR,
+        borrowerMintATokenAccount,
         LENDER_KEYPAIR.publicKey,
         termsUsdc
       );
@@ -797,6 +841,22 @@ describe("PawnHub", () => {
       assert.strictEqual(
         await program.provider.connection.getAccountInfo(offer),
         null
+      );
+
+      const [borrowerBalanceAfter] = await getBorrowerAndLenderTokenBalance(
+        program,
+        borrowerMintATokenAccount,
+        lenderMintATokenAccount
+      );
+
+      if (borrowerBalanceBefore === null || borrowerBalanceAfter == null) {
+        assert.ok(false);
+        return;
+      }
+
+      assert.strictEqual(
+        borrowerBalanceAfter - borrowerBalanceBefore,
+        termsUsdc.principalAmount.toNumber()
       );
     });
   });
