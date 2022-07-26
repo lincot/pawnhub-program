@@ -753,6 +753,7 @@ describe("PawnHub", () => {
         lenderMintATokenAccount
       );
 
+      // To silence typescript null warning
       if (lenderBalanceBefore === null || lenderBalanceAfter == null) {
         assert.ok(false);
         return;
@@ -849,6 +850,7 @@ describe("PawnHub", () => {
         lenderMintATokenAccount
       );
 
+      // To silence typescript null warning
       if (borrowerBalanceBefore === null || borrowerBalanceAfter == null) {
         assert.ok(false);
         return;
@@ -1051,6 +1053,162 @@ describe("PawnHub", () => {
         lenderMintATokenAccount,
         borrowerMintATokenAccount
       );
+    });
+
+    it("Repays loan amount from borrower to lender -- in SPL Token", async () => {
+      const [borrowerBalanceBefore, lenderBalanceBefore] =
+        await getBorrowerAndLenderTokenBalance(
+          program,
+          borrowerMintATokenAccount,
+          lenderMintATokenAccount
+        );
+
+      await repayLoan(
+        program,
+        pawnLoanAddress,
+        pawnLoanState,
+        BORROWER_KEYPAIR,
+        borrowerMintATokenAccount,
+        lenderMintATokenAccount,
+        ADMIN_PDA,
+        adminMintATokenAccount
+      );
+      const [borrowerBalanceAfter, lenderBalanceAfter] =
+        await getBorrowerAndLenderTokenBalance(
+          program,
+          borrowerMintATokenAccount,
+          lenderMintATokenAccount
+        );
+      // To silence typescript null warning
+      if (
+        borrowerBalanceBefore === null ||
+        borrowerBalanceAfter === null ||
+        lenderBalanceBefore === null ||
+        lenderBalanceAfter === null
+      ) {
+        assert.ok(false);
+        return;
+      }
+      assert.strictEqual(
+        borrowerBalanceBefore - borrowerBalanceAfter,
+        lenderBalanceAfter - lenderBalanceBefore
+      );
+    });
+  });
+
+  describe("Repay Loan after offer - in SOL", () => {
+    let pawnLoanAddress: PublicKey;
+    let pawnLoanState: any;
+
+    beforeEach(async () => {
+      ({ pawnLoan: pawnLoanAddress } = await requestLoan(
+        program,
+        BORROWER_KEYPAIR,
+        borrowerPawnTokenAccount,
+        pawnMint.publicKey,
+        TERMS_SUPER_SHORT_LOAN
+      ));
+
+      await makeOffer(
+        program,
+        TERMS_VALID,
+        pawnLoanAddress,
+        LENDER_KEYPAIR,
+        LENDER_KEYPAIR.publicKey
+      );
+
+      await acceptOffer(
+        program,
+        pawnLoanAddress,
+        BORROWER_KEYPAIR,
+        BORROWER_KEYPAIR.publicKey,
+        LENDER_KEYPAIR.publicKey,
+        TERMS_VALID
+      );
+
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
+    });
+
+    it("Repays loan amount from borrower to lender -- in SOL", async () => {
+      const [borrowerBalanceBefore, lenderBalanceBefore] =
+        await getBorrowerAndLenderSolBalance(
+          program,
+          BORROWER_KEYPAIR.publicKey,
+          LENDER_KEYPAIR.publicKey
+        );
+
+      await repayLoanInSol(
+        program,
+        pawnLoanAddress,
+        pawnLoanState,
+        BORROWER_KEYPAIR,
+        ADMIN_PDA
+      );
+
+      const [borrowerBalanceAfter, lenderBalanceAfter] =
+        await getBorrowerAndLenderSolBalance(
+          program,
+          BORROWER_KEYPAIR.publicKey,
+          LENDER_KEYPAIR.publicKey
+        );
+
+      // To silence typescript null warning
+      if (borrowerBalanceBefore === null || lenderBalanceAfter == null) {
+        assert.ok(false);
+        return;
+      }
+
+      assert.strictEqual(
+        borrowerBalanceBefore - borrowerBalanceAfter,
+        lenderBalanceAfter - lenderBalanceBefore
+      );
+
+      const pawnTokenAccountInfo =
+        await program.provider.connection.getAccountInfo(
+          pawnLoanState.pawnTokenAccount
+        );
+
+      const decodedPawnTokenAccountInfo = deserializeTokenAccountInfo(
+        pawnTokenAccountInfo?.data
+      );
+
+      // Pawn token account no longer frozen and delegate is revoked
+      assert.isFalse(decodedPawnTokenAccountInfo?.isFrozen);
+      assert.isNull(decodedPawnTokenAccountInfo?.delegate);
+    });
+  });
+
+  describe("Repay Loan after offer - in SPL Token", () => {
+    let pawnLoanAddress: PublicKey;
+    let pawnLoanState: any;
+
+    beforeEach(async () => {
+      ({ pawnLoan: pawnLoanAddress } = await requestLoan(
+        program,
+        BORROWER_KEYPAIR,
+        borrowerPawnTokenAccount,
+        pawnMint.publicKey,
+        TERMS_SUPER_SHORT_LOAN
+      ));
+
+      await makeOffer(
+        program,
+        termsUsdc,
+        pawnLoanAddress,
+        LENDER_KEYPAIR,
+        lenderMintATokenAccount
+      );
+
+      await acceptOffer(
+        program,
+        pawnLoanAddress,
+        BORROWER_KEYPAIR,
+        borrowerMintATokenAccount,
+        LENDER_KEYPAIR.publicKey,
+        termsUsdc
+      );
+
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
     });
 
     it("Repays loan amount from borrower to lender -- in SPL Token", async () => {
